@@ -1,4 +1,14 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import { createClient } from 'redis';
+
+
+const publishClient=createClient();
+publishClient.connect();
+
+const subscribeClient=createClient();
+subscribeClient.connect();
+
+
 
 const wss = new WebSocketServer({ port: 8080 });
 
@@ -19,25 +29,71 @@ wss.on('connection', function connection(userSocket) {
     const parsedMessage = JSON.parse(data as unknown as string);
     if(parsedMessage.type==="subscribe"){
         subscriptions[id]?.rooms.push(parsedMessage.room);
+        if(oneUserSubscribedToRoom(parsedMessage.room)){
+            console.log("Subscribing to room ", parsedMessage.room);
+            subscribeClient.subscribe(parsedMessage.room, (message)=>{
+                const parsedMessage=JSON.parse(message);
+                Object.keys(subscriptions).forEach((userId)=>{
+                    // @ts-ignore
+                    const {ws,rooms}=subscriptions[userId];
+                    if(rooms.includes(parsedMessage.roomId)){
+                        ws.send(parsedMessage.message);
+                    }
+                })
+            })
+        }
+    }
+    if(parsedMessage.type==="unsubscribe"){
+        const roomToLeave=parsedMessage.room;
+        // @ts-ignore
+        subscriptions[id].rooms = subscriptions[id].rooms.filter((room)=>room!==roomToLeave);
+        if(lastPersonLeftRoom(roomToLeave)){
+            console.log("unsubscribing from room ", roomToLeave);
+            subscribeClient.unsubscribe(roomToLeave);
+        }
     }
     if(parsedMessage.type==="sendMessage"){
         const roomId=parsedMessage.roomId;
         const message=parsedMessage.message;
-        console.log('roomId', roomId);
-        console.log('message', message);
-        Object.keys(subscriptions).forEach((key)=>{
-            // @ts-ignore
-            const {ws, rooms}=subscriptions[key];
-            if(rooms.includes(roomId)){
-                ws.send(`message from room ${roomId}: ${message}`);
-            }
-        });
+        
+        publishClient.publish(roomId, JSON.stringify({
+            type:"sendMessage",
+            roomId: roomId,
+            message: message
+        }))
     }
-    // console.log('received: %s', data);
-    // userSocket.send('hey you sent this message to me: '+ data);
   });
 });
 
 function randomId(){
     return Math.random();
+}
+
+
+function oneUserSubscribedToRoom(roomId: string){
+    let totalInterestedPeople=0;
+    Object.keys(subscriptions).map(userId=>{
+        // @ts-ignore
+        if(subscriptions[userId].rooms.includes(roomId)){
+            totalInterestedPeople+=1;
+        }
+    })
+    if(totalInterestedPeople===1){
+        return true;
+    }   
+    return false;
+}
+
+function lastPersonLeftRoom(roomId: string){
+    let totalInterestedPeople=0;
+    Object.keys(subscriptions).map(userId=>{
+        // @ts-ignore
+        if(subscriptions[userId].rooms.includes(roomId)){
+            totalInterestedPeople+=1;
+        }
+    })
+    if(totalInterestedPeople===0){
+        return true;
+    }
+    return false;
 }
